@@ -117,6 +117,9 @@ class PokeEventHandler(BaseEventHandler):
                     logger.warning("[poke] 回戳命令发送失败")
 
         # 2. 生成文本回复
+        if not self.get_config("poke_config.auto_reply_enabled", True):
+            return True, True, "戳一戳已响应（仅回戳）", None, None
+        
         try:
             # 将变量名从 result_status 改为 success
             success, data = await generator_api.generate_reply(
