@@ -146,14 +146,7 @@ class PokeAction(BaseAction):
         " 避免对同一用户短时间内连续使用。"
     ]
 
-    # 最后戳一戳记录
-
-    last_poke_user: Optional[str] = None
-    last_poke_group: Optional[str] = None
-    last_poke_time: float = 0
-
-
-async def execute(self) -> Tuple[bool, str]:
+    async def execute(self) -> Tuple[bool, str]:
         name: Optional[str] = self.action_data.get("name")
         if not name:
             return False, "[poke] 缺少参数 name"
