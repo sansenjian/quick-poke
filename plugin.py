@@ -80,7 +80,22 @@ class PokeEventHandler(BaseEventHandler):
 
         # 被戳对象必须是 bot 自身
         target_id: Optional[int] = event.get("target_id")
-        if str(target_id) != str(global_config.bot.qq_account):
+        bot_qq = str(global_config.bot.qq_account)
+        if str(target_id) != bot_qq:
+            # 跟戳：看到别人戳别人，有概率跟着戳（不戳自己）
+            follow_enabled = self.get_config("poke_config.follow_poke_enabled", True)
+            follow_prob = self.get_config("poke_config.follow_poke_probability", 0.3)
+            if (follow_enabled 
+                and user_id != bot_qq 
+                and str(target_id) != bot_qq
+                and random.random() < follow_prob):
+                await self.send_command(
+                    message.stream_id,
+                    CMD_SEND_POKE,
+                    {"qq_id": str(target_id)},
+                    storage_message=False
+                )
+                logger.info(f"[poke] 跟戳 | target={target_id}")
             return True, True, "戳的对象不是 bot", None, None
 
         # 生成回复文本
@@ -226,6 +241,17 @@ class PokePlugin(BasePlugin):
                 default=3,
                 description="反戳最大次数（随机1~此值）",
                 example="5"
+            ),
+            "follow_poke_enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用跟戳（看到别人戳别人时跟着戳）"
+            ),
+            "follow_poke_probability": ConfigField(
+                type=float,
+                default=0.3,
+                description="跟戳概率（0~1）",
+                example="0.5"
             ),
         },
         "usage_policy": {
