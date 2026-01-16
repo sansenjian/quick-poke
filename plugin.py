@@ -48,6 +48,8 @@ class PokeEventHandler(BaseEventHandler):
     
     # 冷却记录：{user_id: last_trigger_time}
     _cooldown: Dict[str, float] = {}
+    # 全局频率限制：记录最近一分钟内的处理时间戳
+    _poke_timestamps: List[float] = []
 
     async def execute(self, message: MaiMessages | None) -> Tuple[bool, bool, Optional[str], None, None]:
         """早退策略：任何不符合条件的情况立即返回，减少嵌套"""
@@ -114,6 +116,15 @@ class PokeEventHandler(BaseEventHandler):
             logger.info(f"[poke] 冷却中 | user={user_id} 剩余{rate_limit - (current_time - last_time):.1f}秒")
             return True, True, "冷却中", None, None
         self._cooldown[user_id] = current_time
+
+        # 全局频率限制检查
+        max_pokes = self.get_config("poke_config.max_pokes_per_minute", 10)
+        # 清理超过60秒的旧记录
+        self._poke_timestamps = [t for t in self._poke_timestamps if current_time - t < 60]
+        if len(self._poke_timestamps) >= max_pokes:
+            logger.info(f"[poke] 达到频率上限 | 当前{len(self._poke_timestamps)}/{max_pokes}次/分钟")
+            return True, True, "达到频率上限", None, None
+        self._poke_timestamps.append(current_time)
 
         # 生成回复文本
         reply_reason = person_name + (message.plain_text or "")
@@ -288,7 +299,7 @@ class PokePlugin(BasePlugin):
             "max_pokes_per_minute": ConfigField(
                 type=int,
                 default=10,
-                description="每分钟最多处理戳一戳次数*暂未实现",
+                description="每分钟最多处理戳一戳次数（全局）",
                 example="20"
             ),
         },
