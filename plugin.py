@@ -1,6 +1,7 @@
 from typing import List, Tuple, Type, Optional,Dict,Any
 import json
 import random
+import time
 
 from src.common.logger import get_logger
 from src.config.config import global_config
@@ -20,7 +21,7 @@ logger = get_logger("poke_plugin")
 
 # ---------- 通用小工具 ----------
 def _dig(obj, path: str, default=None):
-    """点分路径安全取值（支持 attr / dict"""
+    """点分路径安全取值（支持 attr / dict）"""
     cur = obj
     for seg in path.split("."):
         if cur is None:
@@ -44,6 +45,9 @@ class PokeEventHandler(BaseEventHandler):
     event_type   = EventType.ON_MESSAGE
     handler_name = "poke_message_handler"
     handler_description = "处理 QQ 戳一戳并自动回戳+文本回复"
+    
+    # 冷却记录：{user_id: last_trigger_time}
+    _cooldown: Dict[str, float] = {}
 
     async def execute(self, message: MaiMessages | None) -> Tuple[bool, bool, Optional[str], None, None]:
         """早退策略：任何不符合条件的情况立即返回，减少嵌套"""
@@ -102,6 +106,15 @@ class PokeEventHandler(BaseEventHandler):
                 logger.info(f"[poke] 跟戳 | target={target_id}")
             return True, True, "戳的对象不是 bot", None, None
 
+        # 冷却检查
+        rate_limit = self.get_config("poke_config.rate_limit_seconds", 30)
+        current_time = time.monotonic()
+        last_time = self._cooldown.get(user_id, 0)
+        if current_time - last_time < rate_limit:
+            logger.info(f"[poke] 冷却中 | user={user_id} 剩余{rate_limit - (current_time - last_time):.1f}秒")
+            return True, True, "冷却中", None, None
+        self._cooldown[user_id] = current_time
+
         # 生成回复文本
         reply_reason = person_name + (message.plain_text or "")
         logger.info(f"[poke] 接收戳一戳 | user={user_id} reason={reply_reason!r}")
@@ -131,14 +144,12 @@ class PokeEventHandler(BaseEventHandler):
             return True, True, "戳一戳已响应（跳过文字回复）", None, None
         
         try:
-            # 将变量名从 result_status 改为 success
             success, data = await generator_api.generate_reply(
                 chat_id=message.stream_id,
                 reply_reason=reply_reason,
                 enable_chinese_typo=False,
-                extra_info=f"{reply_reason}。这是QQ的“戳一戳”功能,用于友好的和某人互动。请针对这个“戳一戳”消息生成一个回复",
+                extra_info=f"用户「{person_name}」戳了你一下{('，附带消息：' + message.plain_text) if message.plain_text else ''}。请用简短俏皮的方式回应。",
             )
-            # 条件判断也相应修改
             if success and data.reply_set.reply_data:
                 for seg in data.reply_set.reply_data:
                     text = seg.content
@@ -154,29 +165,30 @@ class PokeEventHandler(BaseEventHandler):
 # ---------- 动作 ----------
 class PokeAction(BaseAction):
     action_name = "poke"
-    action_description = "使用“戳一戳”功能友好地戳一下某人，不能代表消息内容，仅弱提示。"
-    activation_type = ActionActivationType.ALWAYS  # 此设置可保留
+    action_description = "使用"戳一戳"功能友好地戳一下某人，不能代表消息内容，仅弱提示。"
+    activation_type = ActionActivationType.ALWAYS
     parallel_action = True
     associated_types = ["command"]
 
-    action_parameters = {"name":"要戳的用户名称",
-                                "group_id": "群ID",
-                                "reply_id": "回复消息ID",
-                                "poke_mode": "主动或被动",
-                                "reason": "戳一戳的原因说明"
-                         }
+    action_parameters = {
+        "name": "要戳的用户名称",
+        "group_id": "群ID",
+        "reply_id": "回复消息ID",
+        "poke_mode": "主动或被动",
+        "reason": "戳一戳的原因说明"
+    }
 
     action_require = [
         "**仅在以下非常具体的情况下使用：**",
-        "1. 当用户**明确要求**或**明确同意**你戳他时（例如用户说‘你戳我一下’）。",
+        "1. 当用户**明确要求**或**明确同意**你戳他时（例如用户说'你戳我一下'）。",
         "2. 作为对用户**多次、重复戳你**这一行为的一种**温和的、非文字的回应**，且你已用文字回复过。",
         "3. 在极少数需要**非文字方式强调**你的上一句话（通常是提醒或轻微不满），且认为戳一下比再发一条文字更合适时。",
         "",
         "**重要限制：**",
-        " **绝不能**用它来代替正常的文字交流、回答问题或提供信息。",
-        " **绝不能**在用户正常提问或聊天时使用。",
-        " 如果你不确定是否适用，**一律选择使用 'reply' 进行文字回复**。",
-        " 避免对同一用户短时间内连续使用。"
+        "- **绝不能**用它来代替正常的文字交流、回答问题或提供信息。",
+        "- **绝不能**在用户正常提问或聊天时使用。",
+        "- 如果你不确定是否适用，**一律选择使用 'reply' 进行文字回复**。",
+        "- 避免对同一用户短时间内连续使用。"
     ]
 
     async def execute(self) -> Tuple[bool, str]:
@@ -219,13 +231,13 @@ class PokePlugin(BasePlugin):
 
     config_section_descriptions = {
         "plugin": "插件基本信息",
-        "poke_config": "戳一戳权限配置(实现效果未确定)",
-        "usage_policy": "使用策略/文案配置(未实现配置修改,只能代码修改)",
+        "poke_config": "戳一戳功能配置",
+        "usage_policy": "使用策略/文案配置",
     }
     config_schema: dict = {
         "plugin": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用戳一戳插件"),
-            "config_version": ConfigField(type=str, default="1.0.4", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.1.0", description="配置文件版本"),
         },
         "poke_config": {
             "auto_reply_enabled": ConfigField(
@@ -250,22 +262,10 @@ class PokePlugin(BasePlugin):
                 description="回戳概率(0~1)",
                 example="0.5"
             ),
-            "rate_limit_seconds": ConfigField(
-                type=int,
-                default=30,
-                description="同一用户戳一戳频率限制（秒）",
-                example="60"
-            ),
-            "max_pokes_per_minute": ConfigField(
-                type=int,
-                default=10,
-                description="每分钟最多处理戳一戳次数",
-                example="20"
-            ),
             "poke_back_max_times": ConfigField(
                 type=int,
                 default=3,
-                description="反戳最大次数(随机1~此值）",
+                description="反戳最大次数(随机1~此值)",
                 example="5"
             ),
             "follow_poke_enabled": ConfigField(
@@ -279,13 +279,25 @@ class PokePlugin(BasePlugin):
                 description="跟戳概率(0~1)",
                 example="0.5"
             ),
+            "rate_limit_seconds": ConfigField(
+                type=int,
+                default=30,
+                description="同一用户戳一戳冷却时间（秒）",
+                example="60"
+            ),
+            "max_pokes_per_minute": ConfigField(
+                type=int,
+                default=10,
+                description="每分钟最多处理戳一戳次数*暂未实现",
+                example="20"
+            ),
         },
         "usage_policy": {
             "action_require": ConfigField(
                 type=str,
                 default=[
                     "**仅在以下非常具体的情况下使用：**",
-                    "1. 当用户**明确要求**或**明确同意**你戳他时（例如用户说‘你戳我一下’）。",
+                    "1. 当用户**明确要求**或**明确同意**你戳他时（例如用户说'你戳我一下'）。",
                     "2. 作为对用户**多次、重复戳你**这一行为的一种**温和的、非文字的回应**，且你已用文字回复过。",
                     "3. 在极少数需要**非文字方式强调**你的上一句话（通常是提醒或轻微不满），且认为戳一下比再发一条文字更合适时。",
                     "",
