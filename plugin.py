@@ -59,6 +59,10 @@ class PokeEventHandler(BaseEventHandler):
         except Exception:
             return True, True, "非 JSON 消息", None, None
 
+        # 确保 event 是字典
+        if not isinstance(event, dict):
+            return True, True, "非字典格式消息", None, None
+
         # 卫语句：只处理 notice/poke
         if event.get("post_type") != NOTICE_POKE["post_type"] or event.get("sub_type") != NOTICE_POKE["sub_type"]:
             return True, True, "非戳一戳消息", None, None
@@ -102,23 +106,29 @@ class PokeEventHandler(BaseEventHandler):
         reply_reason = person_name + (message.plain_text or "")
         logger.info(f"[poke] 接收戳一戳 | user={user_id} reason={reply_reason!r}")
 
-        # 1. 先回戳（随机1~poke_back_max_times次）
+        # 1. 先回戳（随机1~poke_back_max_times次，按概率触发）
         if self.get_config("poke_config.auto_poke_back", True):
-            poke_back_max = self.get_config("poke_config.poke_back_max_times", 3)
-            poke_times = random.randint(1, poke_back_max)
-            for _ in range(poke_times):
-                poke_success = await self.send_command(
-                    message.stream_id,
-                    CMD_SEND_POKE,
-                    {"qq_id": user_id},
-                    storage_message=False
-                )
-                if not poke_success:
-                    logger.warning("[poke] 回戳命令发送失败")
+            poke_back_prob = self.get_config("poke_config.poke_back_probability", 0.8)
+            if random.random() < poke_back_prob:
+                poke_back_max = self.get_config("poke_config.poke_back_max_times", 3)
+                poke_times = random.randint(1, poke_back_max)
+                for _ in range(poke_times):
+                    poke_success = await self.send_command(
+                        message.stream_id,
+                        CMD_SEND_POKE,
+                        {"qq_id": user_id},
+                        storage_message=False
+                    )
+                    if not poke_success:
+                        logger.warning("[poke] 回戳命令发送失败")
 
-        # 2. 生成文本回复
+        # 2. 生成文本回复（按概率触发）
         if not self.get_config("poke_config.auto_reply_enabled", True):
             return True, True, "戳一戳已响应（仅回戳）", None, None
+        
+        reply_prob = self.get_config("poke_config.reply_probability", 0.7)
+        if random.random() >= reply_prob:
+            return True, True, "戳一戳已响应（跳过文字回复）", None, None
         
         try:
             # 将变量名从 result_status 改为 success
@@ -126,7 +136,7 @@ class PokeEventHandler(BaseEventHandler):
                 chat_id=message.stream_id,
                 reply_reason=reply_reason,
                 enable_chinese_typo=False,
-                extra_info=f"{reply_reason}。这是QQ的“戳一戳”功能，用于友好的和某人互动。请针对这个“戳一戳”消息生成一个回复",
+                extra_info=f"{reply_reason}。这是QQ的“戳一戳”功能,用于友好的和某人互动。请针对这个“戳一戳”消息生成一个回复",
             )
             # 条件判断也相应修改
             if success and data.reply_set.reply_data:
@@ -223,10 +233,22 @@ class PokePlugin(BasePlugin):
                 default=True,
                 description="是否启用 LLM 文字回复"
             ),
+            "reply_probability": ConfigField(
+                type=float,
+                default=0.7,
+                description="文字回复概率(0~1)",
+                example="0.5"
+            ),
             "auto_poke_back": ConfigField(
                 type=bool,
                 default=True,
                 description="是否自动回戳"
+            ),
+            "poke_back_probability": ConfigField(
+                type=float,
+                default=0.8,
+                description="回戳概率(0~1)",
+                example="0.5"
             ),
             "rate_limit_seconds": ConfigField(
                 type=int,
@@ -243,7 +265,7 @@ class PokePlugin(BasePlugin):
             "poke_back_max_times": ConfigField(
                 type=int,
                 default=3,
-                description="反戳最大次数（随机1~此值）",
+                description="反戳最大次数(随机1~此值）",
                 example="5"
             ),
             "follow_poke_enabled": ConfigField(
@@ -254,7 +276,7 @@ class PokePlugin(BasePlugin):
             "follow_poke_probability": ConfigField(
                 type=float,
                 default=0.3,
-                description="跟戳概率（0~1）",
+                description="跟戳概率(0~1)",
                 example="0.5"
             ),
         },
