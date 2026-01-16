@@ -103,17 +103,18 @@ class PokeEventHandler(BaseEventHandler):
         logger.info(f"[poke] 接收戳一戳 | user={user_id} reason={reply_reason!r}")
 
         # 1. 先回戳（随机1~poke_back_max_times次）
-        poke_back_max = self.get_config("poke_config.poke_back_max_times", 3)
-        poke_times = random.randint(1, poke_back_max)
-        for _ in range(poke_times):
-            poke_success = await self.send_command(
-                message.stream_id,
-                CMD_SEND_POKE,
-                {"qq_id": user_id},
-                storage_message=False
-            )
-            if not poke_success:
-                logger.warning("[poke] 回戳命令发送失败")
+        if self.get_config("poke_config.auto_poke_back", True):
+            poke_back_max = self.get_config("poke_config.poke_back_max_times", 3)
+            poke_times = random.randint(1, poke_back_max)
+            for _ in range(poke_times):
+                poke_success = await self.send_command(
+                    message.stream_id,
+                    CMD_SEND_POKE,
+                    {"qq_id": user_id},
+                    storage_message=False
+                )
+                if not poke_success:
+                    logger.warning("[poke] 回戳命令发送失败")
 
         # 2. 生成文本回复
         try:
