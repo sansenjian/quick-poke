@@ -21,7 +21,7 @@ logger = get_logger("poke_plugin")
 
 # ---------- 通用小工具 ----------
 def _dig(obj, path: str, default=None):
-    """点分路径安全取值（支持 attr / dict）"""
+    """点分路径安全取值（支持 attr / dict)"""
     cur = obj
     for seg in path.split("."):
         if cur is None:
@@ -243,7 +243,7 @@ class PokePlugin(BasePlugin):
     config_section_descriptions = {
         "plugin": "插件基本信息",
         "poke_config": "戳一戳功能配置",
-        "usage_policy": "使用策略/文案配置",
+        "usage_policy": "使用策略/文案配置(未实现在webui修改)",
     }
     config_schema: dict = {
         "plugin": {

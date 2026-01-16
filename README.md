@@ -22,7 +22,7 @@ MaiBot 戳一戳插件，支持自动回戳、LLM 文字回复和跟戳功能。
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `enabled` | bool | true | 是否启用戳一戳插件 |
-| `config_version` | string | "1.0.4" | 配置文件版本号 |
+| `config_version` | string | "1.1.1 | 配置文件版本号 |
 
 ### poke_config 戳一戳配置
 
