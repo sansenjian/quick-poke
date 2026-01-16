@@ -221,7 +221,7 @@ class PokePlugin(BasePlugin):
             "auto_reply_enabled": ConfigField(
                 type=bool,
                 default=True,
-                description="是否自动回复戳一戳"
+                description="是否启用 LLM 文字回复"
             ),
             "auto_poke_back": ConfigField(
                 type=bool,
