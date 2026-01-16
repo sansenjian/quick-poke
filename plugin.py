@@ -1,5 +1,6 @@
 from typing import List, Tuple, Type, Optional,Dict,Any
 import json
+import random
 
 from src.common.logger import get_logger
 from src.config.config import global_config
@@ -19,7 +20,7 @@ logger = get_logger("poke_plugin")
 
 # ---------- 通用小工具 ----------
 def _dig(obj, path: str, default=None):
-    """点分路径安全取值（支持 attr / dict）"""
+    """点分路径安全取值（支持 attr / dict"""
     cur = obj
     for seg in path.split("."):
         if cur is None:
@@ -86,15 +87,18 @@ class PokeEventHandler(BaseEventHandler):
         reply_reason = person_name + (message.plain_text or "")
         logger.info(f"[poke] 接收戳一戳 | user={user_id} reason={reply_reason!r}")
 
-        # 1. 先回戳
-        poke_success = await self.send_command(
-            message.stream_id,
-            CMD_SEND_POKE,
-            {"qq_id": user_id},
-            storage_message=False
-        )
-        if not poke_success:
-            logger.warning("[poke] 回戳命令发送失败")
+        # 1. 先回戳（随机1~poke_back_max_times次）
+        poke_back_max = self.get_config("poke_config.poke_back_max_times", 3)
+        poke_times = random.randint(1, poke_back_max)
+        for _ in range(poke_times):
+            poke_success = await self.send_command(
+                message.stream_id,
+                CMD_SEND_POKE,
+                {"qq_id": user_id},
+                storage_message=False
+            )
+            if not poke_success:
+                logger.warning("[poke] 回戳命令发送失败")
 
         # 2. 生成文本回复
         try:
@@ -216,6 +220,12 @@ class PokePlugin(BasePlugin):
                 default=10,
                 description="每分钟最多处理戳一戳次数",
                 example="20"
+            ),
+            "poke_back_max_times": ConfigField(
+                type=int,
+                default=3,
+                description="反戳最大次数（随机1~此值）",
+                example="5"
             ),
         },
         "usage_policy": {
