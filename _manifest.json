@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "name": "quick_poke",
   "display_name": "简单的戳一戳插件",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "MaiBot 戳一戳插件，支持自动回戳、LLM 文字回复、跟戳功能，可配置触发概率。",
   "author": {
     "name": "sansenjian",
