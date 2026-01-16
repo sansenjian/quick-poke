@@ -209,7 +209,7 @@ class PokePlugin(BasePlugin):
 
     config_section_descriptions = {
         "plugin": "插件基本信息",
-        "poke_config": "戳一戳权限配置(未实现)",
+        "poke_config": "戳一戳权限配置(实现效果未确定)",
         "usage_policy": "使用策略/文案配置(未实现配置修改,只能代码修改)",
     }
     config_schema: dict = {
