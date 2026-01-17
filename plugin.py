@@ -176,7 +176,7 @@ class PokeEventHandler(BaseEventHandler):
 # ---------- 动作 ----------
 class PokeAction(BaseAction):
     action_name = "poke"
-    action_description = "使用"戳一戳"功能友好地戳一下某人，不能代表消息内容，仅弱提示。"
+    action_description = "使用'戳一戳'功能友好地戳一下某人，不能代表消息内容，仅弱提示。"
     activation_type = ActionActivationType.ALWAYS
     parallel_action = True
     associated_types = ["command"]
@@ -248,7 +248,7 @@ class PokePlugin(BasePlugin):
     config_schema: dict = {
         "plugin": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用戳一戳插件"),
-            "config_version": ConfigField(type=str, default="1.1.1", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.1.2", description="配置文件版本"),
         },
         "poke_config": {
             "auto_reply_enabled": ConfigField(
@@ -259,8 +259,7 @@ class PokePlugin(BasePlugin):
             "reply_probability": ConfigField(
                 type=float,
                 default=0.7,
-                description="文字回复概率(0~1)",
-                example="0.5"
+                description="文字回复概率(0~1)"
             ),
             "auto_poke_back": ConfigField(
                 type=bool,
@@ -270,14 +269,12 @@ class PokePlugin(BasePlugin):
             "poke_back_probability": ConfigField(
                 type=float,
                 default=0.8,
-                description="回戳概率(0~1)",
-                example="0.5"
+                description="回戳概率(0~1)"
             ),
             "poke_back_max_times": ConfigField(
                 type=int,
                 default=3,
-                description="反戳最大次数(随机1~此值)",
-                example="5"
+                description="反戳最大次数(随机1~此值)"
             ),
             "follow_poke_enabled": ConfigField(
                 type=bool,
@@ -287,39 +284,17 @@ class PokePlugin(BasePlugin):
             "follow_poke_probability": ConfigField(
                 type=float,
                 default=0.3,
-                description="跟戳概率(0~1)",
-                example="0.5"
+                description="跟戳概率(0~1)"
             ),
             "rate_limit_seconds": ConfigField(
                 type=int,
                 default=30,
-                description="同一用户戳一戳冷却时间（秒）",
-                example="60"
+                description="同一用户戳一戳冷却时间（秒）"
             ),
             "max_pokes_per_minute": ConfigField(
                 type=int,
                 default=10,
-                description="每分钟最多处理戳一戳次数（全局）",
-                example="20"
-            ),
-        },
-        "usage_policy": {
-            "action_require": ConfigField(
-                type=str,
-                default=[
-                    "**仅在以下非常具体的情况下使用：**",
-                    "1. 当用户**明确要求**或**明确同意**你戳他时（例如用户说'你戳我一下'）。",
-                    "2. 作为对用户**多次、重复戳你**这一行为的一种**温和的、非文字的回应**，且你已用文字回复过。",
-                    "3. 在极少数需要**非文字方式强调**你的上一句话（通常是提醒或轻微不满），且认为戳一下比再发一条文字更合适时。",
-                    "",
-                    "**重要限制：**",
-                    "- **绝不能**用它来代替正常的文字交流、回答问题或提供信息。",
-                    "- **绝不能**在用户正常提问或聊天时使用。",
-                    "- 如果你不确定是否适用，**一律选择使用 'reply' 进行文字回复**。",
-                    "- 避免对同一用户短时间内连续使用。"
-                ],
-                description="PokeAction 的 agent 提示语，一行一条，支持 markdown",
-                input_type="textarea",
+                description="每分钟最多处理戳一戳次数（全局）"
             ),
         },
     }
