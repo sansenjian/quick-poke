@@ -18,3 +18,10 @@ config.toml
 
 # Logs
 *.log
+# Tests (测试文件和报告不上传)
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+# Docs (文档文件不上传)
+docs/
