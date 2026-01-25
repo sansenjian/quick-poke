@@ -196,53 +196,177 @@ class PokeAction(BaseAction):
     associated_types = ["command"]
 
     action_parameters = {
-        "name": "要戳的用户名称",
-        "group_id": "群ID",
-        "reply_id": "回复消息ID",
-        "poke_mode": "主动或被动",
-        "reason": "戳一戳的原因说明"
+        "name": "要戳的用户名称（支持：昵称、'我'、'自己'、QQ号）",
+        "group_id": "群ID（可选，会自动从上下文推断）",
+        "reply_id": "回复消息ID（可选）",
+        "poke_mode": "主动或被动（可选）",
+        "reason": "戳一戳的原因说明（可选）"
     }
 
     action_require = [
-        "**仅在以下非常具体的情况下使用：**",
-        "1. 当用户**明确要求**或**明确同意**你戳他时（例如用户说'你戳我一下'）。",
-        "2. 作为对用户**多次、重复戳你**这一行为的一种**温和的、非文字的回应**，且你已用文字回复过。",
+        "**适合使用的场景：**",
+        "1. 用户明确要求'戳我'、'戳一下'、'poke'时",
+        "2. 友好互动氛围中，作为轻松的互动方式",
+        "3. 作为对用户多次戳你的友好回应",
         "3. 在极少数需要**非文字方式强调**你的上一句话（通常是提醒或轻微不满），且认为戳一下比再发一条文字更合适时。",
         "",
         "**重要限制：**",
+        "- 不要在严肃话题或用户情绪不佳时使用",
         "- **绝不能**用它来代替正常的文字交流、回答问题或提供信息。",
         "- **绝不能**在用户正常提问或聊天时使用。",
-        "- 如果你不确定是否适用，**一律选择使用 'reply' 进行文字回复**。",
+        "- 如果你不确定是否适用，**优先选择使用 'reply' 进行文字回复**。",
+        "- 'reply'可以和'poke'一起使用 ",
         "- 避免对同一用户短时间内连续使用。"
     ]
+    
+    # 类级别的冷却记录
+    _last_poke_user: Optional[str] = None
+    _last_poke_group: Optional[str] = None
+    _last_poke_time: float = 0.0
+
+    def _infer_group_id_from_context(self) -> Optional[str]:
+        """从上下文推断群组ID"""
+        group_id = self.action_data.get("group_id")
+        if group_id in (None, "", "None"):
+            group_id = None
+
+        # 从 message 对象获取
+        if not group_id and hasattr(self, "message") and getattr(self.message, "message_info", None):
+            group_id = getattr(self.message.message_info, "group_id", None)
+        
+        # 从 chat_stream 获取
+        if not group_id and hasattr(self, "chat_stream") and getattr(self.chat_stream, "group_id", None):
+            group_id = self.chat_stream.group_id
+        
+        # 从其他可能的属性获取
+        if not group_id and hasattr(self, "group_id"):
+            group_id = getattr(self, "group_id", None)
+
+        return str(group_id) if group_id not in (None, "", "None") else None
+
+    async def _get_user_id(self, name: str) -> Optional[str]:
+        """获取用户ID，支持多种输入方式"""
+        if not name:
+            return None
+        
+        name = name.strip()
+        
+        # 情况1：用户说"我"、"自己"
+        if name in {"我", "我自己", "自己", "me"}:
+            # 从上下文获取当前用户ID
+            if hasattr(self, "user_id") and self.user_id:
+                logger.info(f"[poke] 识别'我' -> user_id={self.user_id}")
+                return str(self.user_id)
+            if hasattr(self, "message") and hasattr(self.message, "user_id"):
+                user_id = self.message.user_id
+                logger.info(f"[poke] 从message识别'我' -> user_id={user_id}")
+                return str(user_id)
+        
+        # 情况2：直接输入QQ号
+        if name.isdigit():
+            logger.info(f"[poke] 直接使用QQ号 -> user_id={name}")
+            return name
+        
+        # 情况3：通过昵称查找
+        try:
+            person_id = person_api.get_person_id_by_name(name)
+            if person_id:
+                user_id = await person_api.get_person_value(person_id, "user_id")
+                if user_id:
+                    logger.info(f"[poke] 通过昵称'{name}'查找 -> user_id={user_id}")
+                    return str(user_id)
+        except Exception as e:
+            logger.warning(f"[poke] 通过昵称查找失败: {e}")
+        
+        return None
+
+    def _build_send_poke_args(self, user_id: str, group_id: Optional[str]) -> List[dict]:
+        """构建多种参数格式，提高兼容性"""
+        candidates: List[dict] = []
+        
+        # 格式1：qq_id（主要格式）
+        args1: dict = {"qq_id": user_id}
+        if group_id:
+            args1["group_id"] = group_id
+        candidates.append(args1)
+        
+        # 格式2：target_id（备用格式）
+        args2: dict = {"target_id": user_id}
+        if group_id:
+            args2["group_id"] = group_id
+        candidates.append(args2)
+        
+        return candidates
+
+    async def _send_poke(self, user_id: str, group_id: Optional[str], target_name: str) -> Tuple[bool, str]:
+        """发送戳一戳命令，尝试多种参数格式"""
+        for args in self._build_send_poke_args(user_id, group_id):
+            try:
+                logger.info(f"[poke] 尝试发送戳一戳 | args={args}")
+                ok = await self.send_command(
+                    CMD_SEND_POKE,
+                    args,
+                    storage_message=False
+                )
+                if ok:
+                    logger.info(f"[poke] 戳一戳发送成功 | target={target_name} user_id={user_id} group_id={group_id}")
+                    return True, "戳一戳成功"
+            except Exception as e:
+                logger.warning(f"[poke] 尝试参数 {args} 失败: {e}")
+        
+        return False, "所有参数格式都失败"
 
     async def execute(self) -> Tuple[bool, str]:
+        # 检查主动戳人功能是否启用
+        if not self.get_config("poke_action.enabled", True):
+            logger.info("[poke] 主动戳人功能已禁用")
+            return False, "[poke] 主动戳人功能已禁用"
+        
         name: Optional[str] = self.action_data.get("name")
         if not name:
             return False, "[poke] 缺少参数 name"
 
-        person_id = person_api.get_person_id_by_name(name)
-        if not person_id:
-            return False, "[poke] 找不到人物"
-
-        user_id = await person_api.get_person_value(person_id, "user_id")
+        # 获取用户ID（支持多种方式）
+        user_id = await self._get_user_id(name)
         if not user_id:
-            return False, "[poke] 找不到 QQ 号"
+            return False, f"[poke] 无法识别用户'{name}'"
 
-        ok = await self.send_command(CMD_SEND_POKE, {"qq_id": user_id}, storage_message=False)
-        if not ok:
-            return False, "[poke] 命令发送失败"
-
-        # 记录到记忆
-        await database_api.store_action_info(
-            chat_stream=self.chat_stream,
-            action_build_into_prompt=True,
-            action_prompt_display=f"戳了{name}一下",
-            action_done=True,
-            action_data=self.action_data,
-            action_name=self.action_name,
-        )
-        return True, "戳一戳成功"
+        # 推断群组ID
+        group_id = self._infer_group_id_from_context()
+        
+        # 检查冷却时间
+        cooldown_seconds = self.get_config("poke_action.cooldown_seconds", 300)
+        current_time = time.time()
+        
+        if (self._last_poke_user == user_id 
+            and self._last_poke_group == group_id
+            and current_time - self._last_poke_time < cooldown_seconds):
+            remaining = int(cooldown_seconds - (current_time - self._last_poke_time))
+            logger.info(f"[poke] 冷却中 | user={user_id} 剩余{remaining}秒")
+            return False, f"冷却中，请{remaining}秒后再试"
+        
+        # 发送戳一戳
+        ok, result = await self._send_poke(user_id, group_id, name)
+        
+        if ok:
+            # 更新冷却记录
+            self._last_poke_user = user_id
+            self._last_poke_group = group_id
+            self._last_poke_time = current_time
+            
+            # 记录到记忆
+            reason = self.action_data.get("reason", "无")
+            await database_api.store_action_info(
+                chat_stream=self.chat_stream,
+                action_build_into_prompt=True,
+                action_prompt_display=f"戳了{name}一下",
+                action_done=True,
+                action_data={"reason": reason, "user_id": user_id, "group_id": group_id},
+                action_name=self.action_name,
+            )
+            return True, result
+        else:
+            return False, f"[poke] {result}"
 
 
 # ---------- 插件注册（必须放在最后，保证类已定义） ----------
@@ -258,12 +382,13 @@ class PokePlugin(BasePlugin):
         "plugin": "插件基本信息",
         "poke_config": "被戳设置",
         "follow_poke_config": "跟戳设置",
+        "poke_action": "主动戳人设置",
         "usage_policy": "使用策略/文案配置(未实现在webui修改)",
     }
     config_schema: dict = {
         "plugin": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用戳一戳插件"),
-            "config_version": ConfigField(type=str, default="1.1.3", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.2.0", description="配置文件版本"),
         },
         "poke_config": {
             "auto_poke_back": ConfigField(
@@ -317,6 +442,23 @@ class PokePlugin(BasePlugin):
                 type=int,
                 default=60,
                 description="跟戳冷却时间（秒），防止对同一个被戳者频繁跟戳"
+            ),
+        },
+        "poke_action": {
+            "enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用主动戳人功能"
+            ),
+            "cooldown_seconds": ConfigField(
+                type=int,
+                default=300,
+                description="主动戳人冷却时间（秒），防止短时间内重复戳同一个人"
+            ),
+            "debug": ConfigField(
+                type=bool,
+                default=False,
+                description="是否开启调试日志"
             ),
         },
     }
