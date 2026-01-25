@@ -50,6 +50,8 @@ class PokeEventHandler(BaseEventHandler):
     _cooldown: Dict[str, float] = {}
     # 全局频率限制：记录最近一分钟内的处理时间戳
     _poke_timestamps: List[float] = []
+    # 跟戳冷却记录：{target_id: last_follow_poke_time}
+    _follow_poke_cooldown: Dict[str, float] = {}
 
     async def execute(self, message: MaiMessages | None) -> Tuple[bool, bool, Optional[str], None, None]:
         """早退策略：任何不符合条件的情况立即返回，减少嵌套"""
@@ -93,19 +95,31 @@ class PokeEventHandler(BaseEventHandler):
         bot_qq = str(global_config.bot.qq_account)
         if str(target_id) != bot_qq:
             # 跟戳：看到别人戳别人，有概率跟着戳（不戳自己）
-            follow_enabled = self.get_config("poke_config.follow_poke_enabled", True)
-            follow_prob = self.get_config("poke_config.follow_poke_probability", 0.3)
+            follow_enabled = self.get_config("follow_poke_config.follow_poke_enabled", True)
+            follow_prob = self.get_config("follow_poke_config.follow_poke_probability", 0.3)
             if (follow_enabled 
                 and user_id != bot_qq 
                 and str(target_id) != bot_qq
                 and random.random() < follow_prob):
-                await self.send_command(
-                    message.stream_id,
-                    CMD_SEND_POKE,
-                    {"qq_id": str(target_id)},
-                    storage_message=False
-                )
-                logger.info(f"[poke] 跟戳 | target={target_id}")
+                
+                # 检查跟戳冷却
+                follow_cooldown = self.get_config("follow_poke_config.follow_poke_cooldown_seconds", 60)
+                current_time = time.monotonic()
+                target_id_str = str(target_id)
+                last_follow_time = self._follow_poke_cooldown.get(target_id_str, 0)
+                
+                if current_time - last_follow_time < follow_cooldown:
+                    remaining = follow_cooldown - (current_time - last_follow_time)
+                    logger.info(f"[poke] 跟戳冷却中 | target={target_id} 剩余{remaining:.1f}秒")
+                else:
+                    await self.send_command(
+                        message.stream_id,
+                        CMD_SEND_POKE,
+                        {"qq_id": str(target_id)},
+                        storage_message=False
+                    )
+                    self._follow_poke_cooldown[target_id_str] = current_time
+                    logger.info(f"[poke] 跟戳 | target={target_id}")
             return True, True, "戳的对象不是 bot", None, None
 
         # 冷却检查
@@ -234,7 +248,7 @@ class PokeAction(BaseAction):
 # ---------- 插件注册（必须放在最后，保证类已定义） ----------
 @register_plugin
 class PokePlugin(BasePlugin):
-    plugin_name: str = "poke_plugin"
+    plugin_name: str = "quick_poke"
     enable_plugin: bool = True
     dependencies: List[str] = []
     python_dependencies: List[str] = []
@@ -242,25 +256,16 @@ class PokePlugin(BasePlugin):
 
     config_section_descriptions = {
         "plugin": "插件基本信息",
-        "poke_config": "戳一戳功能配置",
+        "poke_config": "被戳设置",
+        "follow_poke_config": "跟戳设置",
         "usage_policy": "使用策略/文案配置(未实现在webui修改)",
     }
     config_schema: dict = {
         "plugin": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用戳一戳插件"),
-            "config_version": ConfigField(type=str, default="1.1.2", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.1.3", description="配置文件版本"),
         },
         "poke_config": {
-            "auto_reply_enabled": ConfigField(
-                type=bool,
-                default=True,
-                description="是否启用 LLM 文字回复"
-            ),
-            "reply_probability": ConfigField(
-                type=float,
-                default=0.7,
-                description="文字回复概率(0~1)"
-            ),
             "auto_poke_back": ConfigField(
                 type=bool,
                 default=True,
@@ -276,15 +281,15 @@ class PokePlugin(BasePlugin):
                 default=3,
                 description="反戳最大次数(随机1~此值)"
             ),
-            "follow_poke_enabled": ConfigField(
+            "auto_reply_enabled": ConfigField(
                 type=bool,
                 default=True,
-                description="是否启用跟戳（看到别人戳别人时跟着戳）"
+                description="是否启用 LLM 文字回复"
             ),
-            "follow_poke_probability": ConfigField(
+            "reply_probability": ConfigField(
                 type=float,
-                default=0.3,
-                description="跟戳概率(0~1)"
+                default=0.7,
+                description="文字回复概率(0~1)"
             ),
             "rate_limit_seconds": ConfigField(
                 type=int,
@@ -295,6 +300,23 @@ class PokePlugin(BasePlugin):
                 type=int,
                 default=10,
                 description="每分钟最多处理戳一戳次数（全局）"
+            ),
+        },
+        "follow_poke_config": {
+            "follow_poke_enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用跟戳（看到别人戳别人时跟着戳）"
+            ),
+            "follow_poke_probability": ConfigField(
+                type=float,
+                default=0.3,
+                description="跟戳概率(0~1)"
+            ),
+            "follow_poke_cooldown_seconds": ConfigField(
+                type=int,
+                default=60,
+                description="跟戳冷却时间（秒），防止对同一个被戳者频繁跟戳"
             ),
         },
     }
