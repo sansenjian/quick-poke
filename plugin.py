@@ -248,7 +248,7 @@ class PokeAction(BaseAction):
 # ---------- 插件注册（必须放在最后，保证类已定义） ----------
 @register_plugin
 class PokePlugin(BasePlugin):
-    plugin_name: str = "poke_plugin"
+    plugin_name: str = "quick_poke"
     enable_plugin: bool = True
     dependencies: List[str] = []
     python_dependencies: List[str] = []
@@ -263,7 +263,7 @@ class PokePlugin(BasePlugin):
     config_schema: dict = {
         "plugin": {
             "enabled": ConfigField(type=bool, default=True, description="是否启用戳一戳插件"),
-            "config_version": ConfigField(type=str, default="1.1.2", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.1.3", description="配置文件版本"),
         },
         "poke_config": {
             "auto_poke_back": ConfigField(

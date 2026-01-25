@@ -41,7 +41,7 @@ cp -r quick‑poke MaiBot/plugins/
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `enabled` | bool | true | 是否启用戳一戳插件 |
-| `config_version` | string | 1.1.2 | 配置文件版本号 |
+| `config_version` | string | 1.1.3 | 配置文件版本号 |
 
 ### 被戳设置 (poke_config)
 
@@ -83,7 +83,7 @@ cp -r quick‑poke MaiBot/plugins/
 ```toml
 [plugin]
 enabled = true
-config_version = "1.1.2"
+config_version = "1.1.3"
 
 [poke_config]
 # 回戳设置
@@ -180,6 +180,6 @@ MIT
 
 ## 👨‍💻 开发信息
 
-- **版本**: 1.1.2
+- **版本**: 1.1.3
 - **最后更新**: 2025-01-22
 - **维护者**: Kiro AI Assistant
