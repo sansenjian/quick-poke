@@ -1,4 +1,13 @@
-from typing import List, Tuple, Type, Optional,Dict,Any
+"""Quick Poke 插件
+
+处理 QQ 戳一戳事件，支持：
+- 自动回戳
+- LLM 文字回复
+- 跟戳功能
+- 冷却机制
+- 主动戳人
+"""
+from typing import List, Tuple, Type, Optional, Dict, Any
 import json
 import random
 import time
@@ -42,10 +51,18 @@ NOTICE_POKE: Dict[str, str] = {"post_type": "notice", "sub_type": "poke"}
 
 # ---------- 事件处理器 ----------
 class PokeEventHandler(BaseEventHandler):
+    """戳一戳事件处理器
+
+    处理 QQ 戳一戳事件，支持：
+    - 自动回戳
+    - LLM 文字回复
+    - 跟戳功能
+    - 冷却机制
+    """
     event_type   = EventType.ON_MESSAGE
     handler_name = "poke_message_handler"
     handler_description = "处理 QQ 戳一戳并自动回戳+文本回复"
-    
+
     # 冷却记录：{user_id: last_trigger_time}
     _cooldown: Dict[str, float] = {}
     # 全局频率限制：记录最近一分钟内的处理时间戳
@@ -53,142 +70,326 @@ class PokeEventHandler(BaseEventHandler):
     # 跟戳冷却记录：{target_id: last_follow_poke_time}
     _follow_poke_cooldown: Dict[str, float] = {}
 
-    async def execute(self, message: MaiMessages | None) -> Tuple[bool, bool, Optional[str], None, None]:
-        """早退策略：任何不符合条件的情况立即返回，减少嵌套"""
+    def _validate_message(self, message: MaiMessages | None) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """验证消息是否为有效的戳一戳事件
+
+        Args:
+            message: 消息对象
+
+        Returns:
+            (是否有效, 事件数据)
+        """
+        # 检查 message 是否存在
         if not message:
-            return True, True, "非戳一戳消息", None, None
+            return False, None
 
-        raw: Optional[str] = getattr(message, "raw_message", None)
+        # 检查 raw_message
+        raw = getattr(message, "raw_message", None)
         if not raw:
-            return True, True, "非戳一戳消息", None, None
+            return False, None
 
+        # 解析 JSON
         try:
-            event: Dict[str, Any] = json.loads(raw)
-        except Exception:
-            return True, True, "非 JSON 消息", None, None
+            event = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return False, None
 
-        # 确保 event 是字典
+        # 检查事件类型
         if not isinstance(event, dict):
-            return True, True, "非字典格式消息", None, None
+            return False, None
 
-        # 卫语句：只处理 notice/poke
-        if event.get("post_type") != NOTICE_POKE["post_type"] or event.get("sub_type") != NOTICE_POKE["sub_type"]:
-            return True, True, "非戳一戳消息", None, None
+        # 检查是否为 notice/poke 事件
+        if (event.get("post_type") != NOTICE_POKE["post_type"]
+            or event.get("sub_type") != NOTICE_POKE["sub_type"]):
+            return False, None
 
-        # 发送者 ID（统一路径 + 早退）
+        return True, event
+
+    async def _get_user_info(
+        self,
+        message: MaiMessages,
+        event: Dict[str, Any]
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """获取发送者的用户ID和用户名
+
+        Args:
+            message: 消息对象
+            event: 事件数据
+
+        Returns:
+            (user_id, person_name)
+        """
+        # 获取 user_id
         user_id_raw = _dig(message, "user_id") or _dig(message, "message_base_info.user_id")
         if not user_id_raw:
-            return False, True, "无法获取发送者 user_id", None, None
-        user_id: str = str(user_id_raw)
+            return None, None
 
+        user_id = str(user_id_raw)
+
+        # 获取 person_name
         try:
             person_id = person_api.get_person_id("qq", user_id)
             if not person_id:
-                return False, True, "找不到人物 ID", None, None
+                return None, None
+
             person_name = await person_api.get_person_value(person_id, "person_name")
+            return user_id, person_name
+
         except Exception as e:
             logger.exception(f"[poke] 获取用户信息失败: {e}")
-            return False, True, "获取用户信息异常", None, None
+            return None, None
 
-        # 被戳对象必须是 bot 自身
-        target_id: Optional[int] = event.get("target_id")
+    async def _handle_follow_poke(
+        self,
+        message: MaiMessages,
+        event: Dict[str, Any],
+        user_id: str
+    ) -> Tuple[bool, str]:
+        """处理跟戳逻辑（看到别人戳别人时跟着戳）
+
+        Args:
+            message: 消息对象
+            event: 事件数据
+            user_id: 发送者ID
+
+        Returns:
+            (是否应该早退, 早退原因)
+        """
+        target_id = event.get("target_id")
         bot_qq = str(global_config.bot.qq_account)
-        if str(target_id) != bot_qq:
-            # 跟戳：看到别人戳别人，有概率跟着戳（不戳自己）
-            follow_enabled = self.get_config("follow_poke_config.follow_poke_enabled", True)
-            follow_prob = self.get_config("follow_poke_config.follow_poke_probability", 0.3)
-            if (follow_enabled 
-                and user_id != bot_qq 
-                and str(target_id) != bot_qq
-                and random.random() < follow_prob):
-                
-                # 检查跟戳冷却
-                follow_cooldown = self.get_config("follow_poke_config.follow_poke_cooldown_seconds", 60)
-                current_time = time.monotonic()
-                target_id_str = str(target_id)
-                last_follow_time = self._follow_poke_cooldown.get(target_id_str, 0)
-                
-                if current_time - last_follow_time < follow_cooldown:
-                    remaining = follow_cooldown - (current_time - last_follow_time)
-                    logger.info(f"[poke] 跟戳冷却中 | target={target_id} 剩余{remaining:.1f}秒")
-                else:
-                    await self.send_command(
-                        message.stream_id,
-                        CMD_SEND_POKE,
-                        {"qq_id": str(target_id)},
-                        storage_message=False
-                    )
-                    self._follow_poke_cooldown[target_id_str] = current_time
-                    logger.info(f"[poke] 跟戳 | target={target_id}")
-            return True, True, "戳的对象不是 bot", None, None
 
-        # 冷却检查
+        # 如果戳的是 bot，不处理跟戳
+        if str(target_id) == bot_qq:
+            return False, ""
+
+        # 检查跟戳功能是否启用
+        follow_enabled = self.get_config("follow_poke_config.follow_poke_enabled", True)
+        if not follow_enabled:
+            return True, "戳的对象不是 bot"
+
+        # 检查跟戳概率
+        follow_prob = self.get_config("follow_poke_config.follow_poke_probability", 0.3)
+        if (user_id == bot_qq
+            or str(target_id) == bot_qq
+            or random.random() >= follow_prob):
+            return True, "戳的对象不是 bot"
+
+        # 检查跟戳冷却
+        follow_cooldown = self.get_config("follow_poke_config.follow_poke_cooldown_seconds", 60)
+        current_time = time.monotonic()
+        target_id_str = str(target_id)
+        last_follow_time = self._follow_poke_cooldown.get(target_id_str, 0)
+
+        if current_time - last_follow_time < follow_cooldown:
+            remaining = follow_cooldown - (current_time - last_follow_time)
+            logger.info(f"[poke] 跟戳冷却中 | target={target_id} 剩余{remaining:.1f}秒")
+            return True, "戳的对象不是 bot"
+
+        # 执行跟戳
+        await self.send_command(
+            message.stream_id,
+            CMD_SEND_POKE,
+            {"qq_id": str(target_id)},
+            storage_message=False
+        )
+        self._follow_poke_cooldown[target_id_str] = current_time
+        logger.info(f"[poke] 跟戳 | target={target_id}")
+
+        return True, "戳的对象不是 bot"
+
+    def _check_cooldown(self, user_id: str) -> Tuple[bool, float]:
+        """检查用户是否在冷却期内
+
+        Args:
+            user_id: 用户ID
+
+        Returns:
+            (是否在冷却中, 剩余时间)
+        """
         rate_limit = self.get_config("poke_config.rate_limit_seconds", 30)
         current_time = time.monotonic()
         last_time = self._cooldown.get(user_id, 0)
+
+        # 检查是否在冷却中
         if current_time - last_time < rate_limit:
-            logger.info(f"[poke] 冷却中 | user={user_id} 剩余{rate_limit - (current_time - last_time):.1f}秒")
-            return True, True, "冷却中", None, None
+            remaining = rate_limit - (current_time - last_time)
+            return True, remaining
+
+        # 更新冷却记录
         self._cooldown[user_id] = current_time
+        return False, 0.0
 
-        # 全局频率限制检查
+    def _check_rate_limit(self) -> bool:
+        """检查全局频率限制
+
+        Returns:
+            是否达到频率上限
+        """
         max_pokes = self.get_config("poke_config.max_pokes_per_minute", 10)
+        current_time = time.monotonic()
+
         # 清理超过60秒的旧记录
-        self._poke_timestamps = [t for t in self._poke_timestamps if current_time - t < 60]
+        self._poke_timestamps = [
+            t for t in self._poke_timestamps
+            if current_time - t < 60
+        ]
+
+        # 检查是否达到上限
         if len(self._poke_timestamps) >= max_pokes:
-            logger.info(f"[poke] 达到频率上限 | 当前{len(self._poke_timestamps)}/{max_pokes}次/分钟")
-            return True, True, "达到频率上限", None, None
+            logger.info(
+                f"[poke] 达到频率上限 | "
+                f"当前{len(self._poke_timestamps)}/{max_pokes}次/分钟"
+            )
+            return True
+
+        # 记录当前时间戳
         self._poke_timestamps.append(current_time)
+        return False
 
-        # 生成回复文本
-        reply_reason = person_name + (message.plain_text or "")
-        logger.info(f"[poke] 接收戳一戳 | user={user_id} reason={reply_reason!r}")
+    async def _handle_poke_back(self, message: MaiMessages, user_id: str) -> None:
+        """处理自动回戳逻辑
 
-        # 1. 先回戳（随机1~poke_back_max_times次，按概率触发）
-        if self.get_config("poke_config.auto_poke_back", True):
-            poke_back_prob = self.get_config("poke_config.poke_back_probability", 0.8)
-            if random.random() < poke_back_prob:
-                poke_back_max = self.get_config("poke_config.poke_back_max_times", 3)
-                poke_times = random.randint(1, poke_back_max)
-                for _ in range(poke_times):
-                    poke_success = await self.send_command(
-                        message.stream_id,
-                        CMD_SEND_POKE,
-                        {"qq_id": user_id},
-                        storage_message=False
-                    )
-                    if not poke_success:
-                        logger.warning("[poke] 回戳命令发送失败")
+        Args:
+            message: 消息对象
+            user_id: 用户ID
+        """
+        # 检查回戳功能是否启用
+        if not self.get_config("poke_config.auto_poke_back", True):
+            return
 
-        # 2. 生成文本回复（按概率触发）
+        # 检查回戳概率
+        poke_back_prob = self.get_config("poke_config.poke_back_probability", 0.8)
+        if random.random() >= poke_back_prob:
+            return
+
+        # 获取回戳次数
+        poke_back_max = self.get_config("poke_config.poke_back_max_times", 3)
+        poke_times = random.randint(1, poke_back_max)
+
+        # 执行回戳
+        for _ in range(poke_times):
+            poke_success = await self.send_command(
+                message.stream_id,
+                CMD_SEND_POKE,
+                {"qq_id": user_id},
+                storage_message=False
+            )
+            if not poke_success:
+                logger.warning("[poke] 回戳命令发送失败")
+
+    async def _handle_text_reply(
+        self,
+        message: MaiMessages,
+        user_id: str,
+        person_name: str
+    ) -> bool:
+        """处理 LLM 文字回复逻辑
+
+        Args:
+            message: 消息对象
+            user_id: 用户ID
+            person_name: 用户名
+
+        Returns:
+            是否成功发送回复
+        """
+        # 检查文字回复功能是否启用
         if not self.get_config("poke_config.auto_reply_enabled", True):
-            return True, True, "戳一戳已响应（仅回戳）", None, None
-        
+            return False
+
+        # 检查回复概率
         reply_prob = self.get_config("poke_config.reply_probability", 0.7)
         if random.random() >= reply_prob:
-            return True, True, "戳一戳已响应（跳过文字回复）", None, None
-        
+            return False
+
+        # 生成回复内容
+        reply_reason = person_name + (message.plain_text or "")
+        extra_info = (
+            f"用户「{person_name}」戳了你一下"
+            f"{('，附带消息：' + message.plain_text) if message.plain_text else ''}。"
+            f"请用简短俏皮的方式回应。"
+        )
+
         try:
             success, data = await generator_api.generate_reply(
                 chat_id=message.stream_id,
                 reply_reason=reply_reason,
                 enable_chinese_typo=False,
-                extra_info=f"用户「{person_name}」戳了你一下{('，附带消息：' + message.plain_text) if message.plain_text else ''}。请用简短俏皮的方式回应。",
+                extra_info=extra_info,
             )
+
             if success and data.reply_set.reply_data:
                 for seg in data.reply_set.reply_data:
                     text = seg.content
                     await self.send_text(message.stream_id, text, storage_message=True)
                     logger.info(f"[poke] 文本回复：{text!r}")
-                return True, True, "戳一戳已响应", None, None
+                return True
+
         except Exception as e:
             logger.exception(f"[poke] 生成回复失败：{e}")
 
-        return False, True, "生成回复异常", None, None
+        return False
+
+    async def execute(self, message: MaiMessages | None) -> Tuple[bool, bool, Optional[str], None, None]:
+        """处理戳一戳事件的主流程
+
+        流程：
+        1. 验证消息
+        2. 获取用户信息
+        3. 处理跟戳（如果不是戳 bot）
+        4. 检查冷却和频率限制
+        5. 执行回戳
+        6. 生成文字回复
+        """
+        # 1. 验证消息
+        is_valid, event = self._validate_message(message)
+        if not is_valid:
+            return True, True, "非戳一戳消息", None, None
+
+        # 2. 获取用户信息
+        user_id, person_name = await self._get_user_info(message, event)
+        if not user_id:
+            return False, True, "无法获取用户信息", None, None
+
+        # 3. 处理跟戳（如果不是戳 bot，可能早退）
+        should_exit, exit_reason = await self._handle_follow_poke(message, event, user_id)
+        if should_exit:
+            return True, True, exit_reason, None, None
+
+        # 4. 检查冷却
+        in_cooldown, remaining = self._check_cooldown(user_id)
+        if in_cooldown:
+            logger.info(f"[poke] 冷却中 | user={user_id} 剩余{remaining:.1f}秒")
+            return True, True, "冷却中", None, None
+
+        # 5. 检查频率限制
+        rate_limited = self._check_rate_limit()
+        if rate_limited:
+            return True, True, "达到频率上限", None, None
+
+        # 6. 记录接收
+        logger.info(f"[poke] 接收戳一戳 | user={user_id} person={person_name}")
+
+        # 7. 执行回戳
+        await self._handle_poke_back(message, user_id)
+
+        # 8. 生成文字回复
+        reply_sent = await self._handle_text_reply(message, user_id, person_name)
+
+        # 返回结果
+        result_msg = "戳一戳已响应" if reply_sent else "戳一戳已响应（仅回戳）"
+        return True, True, result_msg, None, None
 
 
 # ---------- 动作 ----------
 class PokeAction(BaseAction):
+    """主动戳人动作
+
+    允许麦麦主动戳用户，支持：
+    - 通过昵称、QQ号或"我"来指定目标
+    - 冷却机制防止频繁戳人
+    - 自动推断群组ID
+    """
     action_name = "poke"
     action_description = "使用'戳一戳'功能友好地戳一下某人，不能代表消息内容，仅弱提示。"
     activation_type = ActionActivationType.ALWAYS
@@ -218,7 +419,7 @@ class PokeAction(BaseAction):
         "- 'reply'可以和'poke'一起使用 ",
         "- 避免对同一用户短时间内连续使用。"
     ]
-    
+
     # 类级别的冷却记录
     _last_poke_user: Optional[str] = None
     _last_poke_group: Optional[str] = None
@@ -233,11 +434,11 @@ class PokeAction(BaseAction):
         # 从 message 对象获取
         if not group_id and hasattr(self, "message") and getattr(self.message, "message_info", None):
             group_id = getattr(self.message.message_info, "group_id", None)
-        
+
         # 从 chat_stream 获取
         if not group_id and hasattr(self, "chat_stream") and getattr(self.chat_stream, "group_id", None):
             group_id = self.chat_stream.group_id
-        
+
         # 从其他可能的属性获取
         if not group_id and hasattr(self, "group_id"):
             group_id = getattr(self, "group_id", None)
@@ -248,9 +449,9 @@ class PokeAction(BaseAction):
         """获取用户ID，支持多种输入方式"""
         if not name:
             return None
-        
+
         name = name.strip()
-        
+
         # 情况1：用户说"我"、"自己"
         if name in {"我", "我自己", "自己", "me"}:
             # 从上下文获取当前用户ID
@@ -261,12 +462,12 @@ class PokeAction(BaseAction):
                 user_id = self.message.user_id
                 logger.info(f"[poke] 从message识别'我' -> user_id={user_id}")
                 return str(user_id)
-        
+
         # 情况2：直接输入QQ号
         if name.isdigit():
             logger.info(f"[poke] 直接使用QQ号 -> user_id={name}")
             return name
-        
+
         # 情况3：通过昵称查找
         try:
             person_id = person_api.get_person_id_by_name(name)
@@ -277,25 +478,25 @@ class PokeAction(BaseAction):
                     return str(user_id)
         except Exception as e:
             logger.warning(f"[poke] 通过昵称查找失败: {e}")
-        
+
         return None
 
     def _build_send_poke_args(self, user_id: str, group_id: Optional[str]) -> List[dict]:
         """构建多种参数格式，提高兼容性"""
         candidates: List[dict] = []
-        
+
         # 格式1：qq_id（主要格式）
         args1: dict = {"qq_id": user_id}
         if group_id:
             args1["group_id"] = group_id
         candidates.append(args1)
-        
+
         # 格式2：target_id（备用格式）
         args2: dict = {"target_id": user_id}
         if group_id:
             args2["group_id"] = group_id
         candidates.append(args2)
-        
+
         return candidates
 
     async def _send_poke(self, user_id: str, group_id: Optional[str], target_name: str) -> Tuple[bool, str]:
@@ -313,15 +514,20 @@ class PokeAction(BaseAction):
                     return True, "戳一戳成功"
             except Exception as e:
                 logger.warning(f"[poke] 尝试参数 {args} 失败: {e}")
-        
+
         return False, "所有参数格式都失败"
 
     async def execute(self) -> Tuple[bool, str]:
+        """执行主动戳人动作
+
+        Returns:
+            (是否成功, 结果消息)
+        """
         # 检查主动戳人功能是否启用
         if not self.get_config("poke_action.enabled", True):
             logger.info("[poke] 主动戳人功能已禁用")
             return False, "[poke] 主动戳人功能已禁用"
-        
+
         name: Optional[str] = self.action_data.get("name")
         if not name:
             return False, "[poke] 缺少参数 name"
@@ -333,45 +539,52 @@ class PokeAction(BaseAction):
 
         # 推断群组ID
         group_id = self._infer_group_id_from_context()
-        
+
         # 检查冷却时间
         cooldown_seconds = self.get_config("poke_action.cooldown_seconds", 300)
         current_time = time.time()
-        
-        if (self._last_poke_user == user_id 
+
+        if (self._last_poke_user == user_id
             and self._last_poke_group == group_id
             and current_time - self._last_poke_time < cooldown_seconds):
             remaining = int(cooldown_seconds - (current_time - self._last_poke_time))
             logger.info(f"[poke] 冷却中 | user={user_id} 剩余{remaining}秒")
             return False, f"冷却中，请{remaining}秒后再试"
-        
+
         # 发送戳一戳
         ok, result = await self._send_poke(user_id, group_id, name)
-        
-        if ok:
-            # 更新冷却记录
-            self._last_poke_user = user_id
-            self._last_poke_group = group_id
-            self._last_poke_time = current_time
-            
-            # 记录到记忆
-            reason = self.action_data.get("reason", "无")
-            await database_api.store_action_info(
-                chat_stream=self.chat_stream,
-                action_build_into_prompt=True,
-                action_prompt_display=f"戳了{name}一下",
-                action_done=True,
-                action_data={"reason": reason, "user_id": user_id, "group_id": group_id},
-                action_name=self.action_name,
-            )
-            return True, result
-        else:
+
+        if not ok:
             return False, f"[poke] {result}"
+
+        # 更新冷却记录
+        self._last_poke_user = user_id
+        self._last_poke_group = group_id
+        self._last_poke_time = current_time
+
+        # 记录到记忆
+        reason = self.action_data.get("reason", "无")
+        await database_api.store_action_info(
+            chat_stream=self.chat_stream,
+            action_build_into_prompt=True,
+            action_prompt_display=f"戳了{name}一下",
+            action_done=True,
+            action_data={"reason": reason, "user_id": user_id, "group_id": group_id},
+            action_name=self.action_name,
+        )
+        return True, result
 
 
 # ---------- 插件注册（必须放在最后，保证类已定义） ----------
 @register_plugin
 class PokePlugin(BasePlugin):
+    """Quick Poke 插件
+
+    提供戳一戳相关功能：
+    - 被戳自动回复（回戳 + 文字）
+    - 跟戳功能
+    - 主动戳人
+    """
     plugin_name: str = "quick_poke"
     enable_plugin: bool = True
     dependencies: List[str] = []
@@ -464,6 +677,11 @@ class PokePlugin(BasePlugin):
     }
 
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
+        """获取插件组件列表
+
+        Returns:
+            组件信息和类型的列表
+        """
         return [
             (PokeEventHandler.get_handler_info(), PokeEventHandler),
             (PokeAction.get_action_info(), PokeAction),
