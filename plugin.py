@@ -107,14 +107,12 @@ class PokeEventHandler(BaseEventHandler):
 
     async def _get_user_info(
         self,
-        message: MaiMessages,
-        event: Dict[str, Any]
+        message: MaiMessages
     ) -> Tuple[Optional[str], Optional[str]]:
         """获取发送者的用户ID和用户名
 
         Args:
             message: 消息对象
-            event: 事件数据
 
         Returns:
             (user_id, person_name)
@@ -262,8 +260,12 @@ class PokeEventHandler(BaseEventHandler):
         if random.random() >= poke_back_prob:
             return
 
-        # 获取回戳次数
+        # 获取回戳次数（添加配置验证保护）
         poke_back_max = self.get_config("poke_config.poke_back_max_times", 3)
+        if poke_back_max < 1:
+            logger.warning(f"[poke] 配置错误：poke_back_max_times={poke_back_max}，必须 >= 1，跳过回戳")
+            return
+        
         poke_times = random.randint(1, poke_back_max)
 
         # 执行回戳
@@ -347,7 +349,7 @@ class PokeEventHandler(BaseEventHandler):
             return True, True, "非戳一戳消息", None, None
 
         # 2. 获取用户信息
-        user_id, person_name = await self._get_user_info(message, event)
+        user_id, person_name = await self._get_user_info(message)
         if not user_id:
             return False, True, "无法获取用户信息", None, None
 
@@ -427,58 +429,109 @@ class PokeAction(BaseAction):
 
     def _infer_group_id_from_context(self) -> Optional[str]:
         """从上下文推断群组ID"""
+        debug = self.get_config("poke_action.debug", False)
+        
+        if debug:
+            logger.debug("[poke] _infer_group_id: 开始推断群组ID")
+        
         group_id = self.action_data.get("group_id")
+        if debug:
+            logger.debug(f"[poke] _infer_group_id: 从 action_data 获取 | group_id={group_id}")
+        
         if group_id in (None, "", "None"):
             group_id = None
 
         # 从 message 对象获取
         if not group_id and hasattr(self, "message") and getattr(self.message, "message_info", None):
             group_id = getattr(self.message.message_info, "group_id", None)
+            if debug:
+                logger.debug(f"[poke] _infer_group_id: 从 message.message_info 获取 | group_id={group_id}")
 
         # 从 chat_stream 获取
         if not group_id and hasattr(self, "chat_stream") and getattr(self.chat_stream, "group_id", None):
             group_id = self.chat_stream.group_id
+            if debug:
+                logger.debug(f"[poke] _infer_group_id: 从 chat_stream 获取 | group_id={group_id}")
 
         # 从其他可能的属性获取
         if not group_id and hasattr(self, "group_id"):
             group_id = getattr(self, "group_id", None)
+            if debug:
+                logger.debug(f"[poke] _infer_group_id: 从 self.group_id 获取 | group_id={group_id}")
 
-        return str(group_id) if group_id not in (None, "", "None") else None
+        result = str(group_id) if group_id not in (None, "", "None") else None
+        
+        if debug:
+            logger.debug(f"[poke] _infer_group_id: 推断结果 | group_id={result}")
+        
+        return result
 
     async def _get_user_id(self, name: str) -> Optional[str]:
         """获取用户ID，支持多种输入方式"""
+        debug = self.get_config("poke_action.debug", False)
+        
         if not name:
+            if debug:
+                logger.debug("[poke] _get_user_id: name 为空")
             return None
 
         name = name.strip()
+        
+        if debug:
+            logger.debug(f"[poke] _get_user_id: 开始识别 | name={name}")
 
         # 情况1：用户说"我"、"自己"
         if name in {"我", "我自己", "自己", "me"}:
+            if debug:
+                logger.debug("[poke] _get_user_id: 识别为'我'，尝试从上下文获取")
+            
             # 从上下文获取当前用户ID
             if hasattr(self, "user_id") and self.user_id:
                 logger.info(f"[poke] 识别'我' -> user_id={self.user_id}")
+                if debug:
+                    logger.debug(f"[poke] _get_user_id: 从 self.user_id 获取 -> {self.user_id}")
                 return str(self.user_id)
             if hasattr(self, "message") and hasattr(self.message, "user_id"):
                 user_id = self.message.user_id
                 logger.info(f"[poke] 从message识别'我' -> user_id={user_id}")
+                if debug:
+                    logger.debug(f"[poke] _get_user_id: 从 message.user_id 获取 -> {user_id}")
                 return str(user_id)
+            
+            if debug:
+                logger.debug("[poke] _get_user_id: 无法从上下文获取用户ID")
 
         # 情况2：直接输入QQ号
         if name.isdigit():
             logger.info(f"[poke] 直接使用QQ号 -> user_id={name}")
+            if debug:
+                logger.debug(f"[poke] _get_user_id: 识别为QQ号 -> {name}")
             return name
 
         # 情况3：通过昵称查找
+        if debug:
+            logger.debug(f"[poke] _get_user_id: 尝试通过昵称查找 | name={name}")
+        
         try:
             person_id = person_api.get_person_id_by_name(name)
+            if debug:
+                logger.debug(f"[poke] _get_user_id: person_id={person_id}")
+            
             if person_id:
                 user_id = await person_api.get_person_value(person_id, "user_id")
                 if user_id:
                     logger.info(f"[poke] 通过昵称'{name}'查找 -> user_id={user_id}")
+                    if debug:
+                        logger.debug(f"[poke] _get_user_id: 昵称查找成功 -> {user_id}")
                     return str(user_id)
         except Exception as e:
             logger.warning(f"[poke] 通过昵称查找失败: {e}")
+            if debug:
+                logger.debug(f"[poke] _get_user_id: 昵称查找异常 | error={e}")
 
+        if debug:
+            logger.debug(f"[poke] _get_user_id: 所有方式都失败，无法识别用户 | name={name}")
+        
         return None
 
     def _build_send_poke_args(self, user_id: str, group_id: Optional[str]) -> List[dict]:
@@ -501,20 +554,47 @@ class PokeAction(BaseAction):
 
     async def _send_poke(self, user_id: str, group_id: Optional[str], target_name: str) -> Tuple[bool, str]:
         """发送戳一戳命令，尝试多种参数格式"""
-        for args in self._build_send_poke_args(user_id, group_id):
+        debug = self.get_config("poke_action.debug", False)
+        
+        if debug:
+            logger.debug(
+                f"[poke] _send_poke: 开始发送 | "
+                f"user_id={user_id} group_id={group_id} target_name={target_name}"
+            )
+        
+        candidates = self._build_send_poke_args(user_id, group_id)
+        
+        if debug:
+            logger.debug(f"[poke] _send_poke: 生成参数候选 | count={len(candidates)}")
+        
+        for idx, args in enumerate(candidates, 1):
             try:
                 logger.info(f"[poke] 尝试发送戳一戳 | args={args}")
+                if debug:
+                    logger.debug(f"[poke] _send_poke: 尝试第{idx}种参数格式 | args={args}")
+                
                 ok = await self.send_command(
                     CMD_SEND_POKE,
                     args,
                     storage_message=False
                 )
+                
+                if debug:
+                    logger.debug(f"[poke] _send_poke: send_command 返回 | ok={ok}")
+                
                 if ok:
                     logger.info(f"[poke] 戳一戳发送成功 | target={target_name} user_id={user_id} group_id={group_id}")
+                    if debug:
+                        logger.debug(f"[poke] _send_poke: 第{idx}种参数格式成功")
                     return True, "戳一戳成功"
             except Exception as e:
                 logger.warning(f"[poke] 尝试参数 {args} 失败: {e}")
+                if debug:
+                    logger.debug(f"[poke] _send_poke: 第{idx}种参数格式失败 | error={e}")
 
+        if debug:
+            logger.debug("[poke] _send_poke: 所有参数格式都失败")
+        
         return False, "所有参数格式都失败"
 
     async def execute(self) -> Tuple[bool, str]:
@@ -523,6 +603,12 @@ class PokeAction(BaseAction):
         Returns:
             (是否成功, 结果消息)
         """
+        # 读取调试配置
+        debug = self.get_config("poke_action.debug", False)
+        
+        if debug:
+            logger.debug(f"[poke] 开始执行主动戳人 | action_data={self.action_data}")
+        
         # 检查主动戳人功能是否启用
         if not self.get_config("poke_action.enabled", True):
             logger.info("[poke] 主动戳人功能已禁用")
@@ -530,37 +616,75 @@ class PokeAction(BaseAction):
 
         name: Optional[str] = self.action_data.get("name")
         if not name:
+            if debug:
+                logger.debug("[poke] 参数解析失败：缺少 name 参数")
             return False, "[poke] 缺少参数 name"
+
+        if debug:
+            logger.debug(f"[poke] 参数解析 | name={name}")
 
         # 获取用户ID（支持多种方式）
         user_id = await self._get_user_id(name)
         if not user_id:
+            if debug:
+                logger.debug(f"[poke] 用户识别失败 | name={name}")
             return False, f"[poke] 无法识别用户'{name}'"
+
+        if debug:
+            logger.debug(f"[poke] 用户识别成功 | name={name} -> user_id={user_id}")
 
         # 推断群组ID
         group_id = self._infer_group_id_from_context()
+        if debug:
+            logger.debug(f"[poke] 群组ID推断 | group_id={group_id}")
 
         # 检查冷却时间（使用 monotonic 时间避免系统时间调整影响）
         cooldown_seconds = self.get_config("poke_action.cooldown_seconds", 300)
         current_time = time.monotonic()
+
+        if debug:
+            logger.debug(
+                f"[poke] 冷却检查 | "
+                f"last_user={self._last_poke_user} "
+                f"last_group={self._last_poke_group} "
+                f"last_time={self._last_poke_time:.2f} "
+                f"current_time={current_time:.2f} "
+                f"cooldown={cooldown_seconds}s"
+            )
 
         if (self._last_poke_user == user_id
             and self._last_poke_group == group_id
             and current_time - self._last_poke_time < cooldown_seconds):
             remaining = int(cooldown_seconds - (current_time - self._last_poke_time))
             logger.info(f"[poke] 冷却中 | user={user_id} 剩余{remaining}秒")
+            if debug:
+                logger.debug(f"[poke] 冷却检查失败 | 剩余时间={remaining}秒")
             return False, f"冷却中，请{remaining}秒后再试"
+
+        if debug:
+            logger.debug("[poke] 冷却检查通过，准备发送戳一戳")
 
         # 发送戳一戳
         ok, result = await self._send_poke(user_id, group_id, name)
 
         if not ok:
+            if debug:
+                logger.debug(f"[poke] 戳一戳发送失败 | result={result}")
             return False, f"[poke] {result}"
+
+        if debug:
+            logger.debug(f"[poke] 戳一戳发送成功 | user_id={user_id} group_id={group_id}")
 
         # 更新冷却记录
         self._last_poke_user = user_id
         self._last_poke_group = group_id
         self._last_poke_time = current_time
+
+        if debug:
+            logger.debug(
+                f"[poke] 冷却记录已更新 | "
+                f"user={user_id} group={group_id} time={current_time:.2f}"
+            )
 
         # 记录到记忆
         reason = self.action_data.get("reason", "无")
@@ -572,6 +696,10 @@ class PokeAction(BaseAction):
             action_data={"reason": reason, "user_id": user_id, "group_id": group_id},
             action_name=self.action_name,
         )
+        
+        if debug:
+            logger.debug(f"[poke] 动作记录已保存 | reason={reason}")
+        
         return True, result
 
 
