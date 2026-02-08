@@ -163,14 +163,16 @@ class PokeEventHandler(BaseEventHandler):
         # 检查跟戳功能是否启用
         follow_enabled = self.get_config("follow_poke_config.follow_poke_enabled", True)
         if not follow_enabled:
-            return True, "戳的对象不是 bot"
+            return True, "跟戳功能已禁用"
+
+        # 检查是否是 bot 自己戳别人（不跟戳）
+        if user_id == bot_qq:
+            return True, "bot 自己戳别人，不跟戳"
 
         # 检查跟戳概率
         follow_prob = self.get_config("follow_poke_config.follow_poke_probability", 0.3)
-        if (user_id == bot_qq
-            or str(target_id) == bot_qq
-            or random.random() >= follow_prob):
-            return True, "戳的对象不是 bot"
+        if random.random() >= follow_prob:
+            return True, "跟戳概率未命中"
 
         # 检查跟戳冷却
         follow_cooldown = self.get_config("follow_poke_config.follow_poke_cooldown_seconds", 60)
@@ -181,7 +183,7 @@ class PokeEventHandler(BaseEventHandler):
         if current_time - last_follow_time < follow_cooldown:
             remaining = follow_cooldown - (current_time - last_follow_time)
             logger.info(f"[poke] 跟戳冷却中 | target={target_id} 剩余{remaining:.1f}秒")
-            return True, "戳的对象不是 bot"
+            return True, f"跟戳冷却中（剩余{remaining:.1f}秒）"
 
         # 执行跟戳
         await self.send_command(
@@ -193,7 +195,7 @@ class PokeEventHandler(BaseEventHandler):
         self._follow_poke_cooldown[target_id_str] = current_time
         logger.info(f"[poke] 跟戳 | target={target_id}")
 
-        return True, "戳的对象不是 bot"
+        return True, "跟戳成功"
 
     def _check_cooldown(self, user_id: str) -> Tuple[bool, float]:
         """检查用户是否在冷却期内
@@ -352,6 +354,11 @@ class PokeEventHandler(BaseEventHandler):
         user_id, person_name = await self._get_user_info(message)
         if not user_id:
             return False, True, "无法获取用户信息", None, None
+        
+        # 兜底：如果 person_name 为 None，使用默认值
+        if not person_name:
+            person_name = "这位用户"
+            logger.warning(f"[poke] 无法获取用户名，使用默认值 | user_id={user_id}")
 
         # 3. 处理跟戳（如果不是戳 bot，可能早退）
         should_exit, exit_reason = await self._handle_follow_poke(message, event, user_id)
@@ -422,10 +429,9 @@ class PokeAction(BaseAction):
         "- 避免对同一用户短时间内连续使用。"
     ]
 
-    # 类级别的冷却记录（使用 monotonic 时间避免系统时间调整影响）
-    _last_poke_user: Optional[str] = None
-    _last_poke_group: Optional[str] = None
-    _last_poke_time: float = 0.0  # monotonic 基准时间（秒）
+    # 类级别的冷却记录（使用字典按 (group_id, user_id) 键存储）
+    # 格式：{(group_id, user_id): last_poke_time}
+    _cooldown_records: Dict[Tuple[Optional[str], str], float] = {}
 
     def _infer_group_id_from_context(self) -> Optional[str]:
         """从上下文推断群组ID"""
@@ -638,25 +644,24 @@ class PokeAction(BaseAction):
         if debug:
             logger.debug(f"[poke] 群组ID推断 | group_id={group_id}")
 
-        # 检查冷却时间（使用 monotonic 时间避免系统时间调整影响）
+        # 检查冷却时间（按 (group_id, user_id) 键检查）
         cooldown_seconds = self.get_config("poke_action.cooldown_seconds", 300)
         current_time = time.monotonic()
+        cooldown_key = (group_id, user_id)
+        last_poke_time = self._cooldown_records.get(cooldown_key, 0.0)
 
         if debug:
             logger.debug(
                 f"[poke] 冷却检查 | "
-                f"last_user={self._last_poke_user} "
-                f"last_group={self._last_poke_group} "
-                f"last_time={self._last_poke_time:.2f} "
+                f"cooldown_key={cooldown_key} "
+                f"last_time={last_poke_time:.2f} "
                 f"current_time={current_time:.2f} "
                 f"cooldown={cooldown_seconds}s"
             )
 
-        if (self._last_poke_user == user_id
-            and self._last_poke_group == group_id
-            and current_time - self._last_poke_time < cooldown_seconds):
-            remaining = int(cooldown_seconds - (current_time - self._last_poke_time))
-            logger.info(f"[poke] 冷却中 | user={user_id} 剩余{remaining}秒")
+        if current_time - last_poke_time < cooldown_seconds:
+            remaining = int(cooldown_seconds - (current_time - last_poke_time))
+            logger.info(f"[poke] 冷却中 | user={user_id} group={group_id} 剩余{remaining}秒")
             if debug:
                 logger.debug(f"[poke] 冷却检查失败 | 剩余时间={remaining}秒")
             return False, f"冷却中，请{remaining}秒后再试"
@@ -675,15 +680,13 @@ class PokeAction(BaseAction):
         if debug:
             logger.debug(f"[poke] 戳一戳发送成功 | user_id={user_id} group_id={group_id}")
 
-        # 更新冷却记录
-        self._last_poke_user = user_id
-        self._last_poke_group = group_id
-        self._last_poke_time = current_time
+        # 更新冷却记录（按 (group_id, user_id) 键存储）
+        self._cooldown_records[cooldown_key] = current_time
 
         if debug:
             logger.debug(
                 f"[poke] 冷却记录已更新 | "
-                f"user={user_id} group={group_id} time={current_time:.2f}"
+                f"cooldown_key={cooldown_key} time={current_time:.2f}"
             )
 
         # 记录到记忆

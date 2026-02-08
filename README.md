@@ -64,7 +64,7 @@ cp -r quick‑poke MaiBot/plugins/
 | `rate_limit_seconds` | int | 30 | 同一用户冷却时间（秒） |
 | `max_pokes_per_minute` | int | 10 | 每分钟最多处理次数 |
 
-### 跟戳设置 (poke_config)
+### 跟戳设置 (follow_poke_config)
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
