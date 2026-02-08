@@ -420,10 +420,10 @@ class PokeAction(BaseAction):
         "- 避免对同一用户短时间内连续使用。"
     ]
 
-    # 类级别的冷却记录
+    # 类级别的冷却记录（使用 monotonic 时间避免系统时间调整影响）
     _last_poke_user: Optional[str] = None
     _last_poke_group: Optional[str] = None
-    _last_poke_time: float = 0.0
+    _last_poke_time: float = 0.0  # monotonic 基准时间（秒）
 
     def _infer_group_id_from_context(self) -> Optional[str]:
         """从上下文推断群组ID"""
@@ -540,9 +540,9 @@ class PokeAction(BaseAction):
         # 推断群组ID
         group_id = self._infer_group_id_from_context()
 
-        # 检查冷却时间
+        # 检查冷却时间（使用 monotonic 时间避免系统时间调整影响）
         cooldown_seconds = self.get_config("poke_action.cooldown_seconds", 300)
-        current_time = time.time()
+        current_time = time.monotonic()
 
         if (self._last_poke_user == user_id
             and self._last_poke_group == group_id
