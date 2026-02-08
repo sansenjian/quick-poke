@@ -41,7 +41,7 @@ cp -r quick‑poke MaiBot/plugins/
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `enabled` | bool | true | 是否启用戳一戳插件 |
-| `config_version` | string | 1.1.2 | 配置文件版本号 |
+| `config_version` | string | 1.2.0 | 配置文件版本号 |
 
 ### 被戳设置 (poke_config)
 
@@ -64,7 +64,7 @@ cp -r quick‑poke MaiBot/plugins/
 | `rate_limit_seconds` | int | 30 | 同一用户冷却时间（秒） |
 | `max_pokes_per_minute` | int | 10 | 每分钟最多处理次数 |
 
-### 跟戳设置 (poke_config)
+### 跟戳设置 (follow_poke_config)
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
@@ -83,7 +83,7 @@ cp -r quick‑poke MaiBot/plugins/
 ```toml
 [plugin]
 enabled = true
-config_version = "1.1.2"
+config_version = "1.2.0"
 
 [poke_config]
 # 回戳设置
@@ -169,8 +169,8 @@ A: 防止对同一个被戳者频繁跟戳。冷却期内不会跟戳，冷却�
 
 ## 📈 性能指标
 
-- 代码覆盖率：100%
-- 测试通过率：100%
+- 代码覆盖率：80%（总体）
+- 测试通过率：100%（86/86 测试通过）
 - 质量评分：5/5
 - 响应延迟：<100ms
 
@@ -180,6 +180,6 @@ MIT
 
 ## 👨‍💻 开发信息
 
-- **版本**: 1.1.2
+- **版本**: 1.2.0
 - **最后更新**: 2025-01-22
 - **维护者**: Kiro AI Assistant

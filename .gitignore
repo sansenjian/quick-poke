@@ -23,5 +23,7 @@ tests/
 .pytest_cache/
 .coverage
 htmlcov/
+.benchmarks/
+
 # Docs (文档文件不上传)
 docs/
